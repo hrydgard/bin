@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+#
+# Delete local branches that have already been merged - exactly the ones "git branch -d" will
+# remove without complaint, so a branch that was squash-merged or rebased upstream is kept and
+# has to go by hand.
+#
+# Refuses to do anything unless master is checked out and identical to origin/master, since
+# "merged" is measured against whatever master happens to point at right now.
+#
+# Usage: git tidy-branches [-n|--dry-run]        (-h for this text; git eats --help itself)
+
+set -uo pipefail
+
+MAIN=master
+REMOTE=origin
+dry_run=0
+
+for arg in "$@"; do
+	case "$arg" in
+		-n|--dry-run) dry_run=1 ;;
+		-h|--help) sed -n '2,11p' "$0" | cut -c3-; exit 0 ;;
+		*) echo "unknown argument: $arg" >&2; exit 2 ;;
+	esac
+done
+
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+	echo "not inside a git repository" >&2
+	exit 1
+fi
+
+current=$(git symbolic-ref --quiet --short HEAD)
+if [ -z "$current" ]; then
+	echo "HEAD is detached - check out $MAIN first" >&2
+	exit 1
+fi
+if [ "$current" != "$MAIN" ]; then
+	echo "on '$current' - check out $MAIN first" >&2
+	exit 1
+fi
+
+echo "Fetching $REMOTE..."
+if ! git fetch --quiet "$REMOTE"; then
+	echo "git fetch $REMOTE failed" >&2
+	exit 1
+fi
+
+if ! git rev-parse --verify --quiet "$REMOTE/$MAIN" >/dev/null; then
+	echo "no $REMOTE/$MAIN to compare against" >&2
+	exit 1
+fi
+
+# Insist on being exactly level. Behind means the merge status we're about to test is stale;
+# ahead means unpushed commits on master, which is its own thing to sort out first.
+if [ "$(git rev-parse "$MAIN")" != "$(git rev-parse "$REMOTE/$MAIN")" ]; then
+	read -r ahead behind < <(git rev-list --left-right --count "$MAIN...$REMOTE/$MAIN")
+	echo "$MAIN is not level with $REMOTE/$MAIN ($ahead ahead, $behind behind) - sync it first" >&2
+	exit 1
+fi
+
+# Mirrors what "git branch -d" accepts: merged into HEAD, or merged into its own upstream.
+is_merged() {
+	local branch=$1 upstream
+	if git merge-base --is-ancestor "$branch" HEAD; then
+		return 0
+	fi
+	upstream=$(git rev-parse --verify --quiet --symbolic-full-name "$branch@{upstream}") || return 1
+	git merge-base --is-ancestor "$branch" "$upstream"
+}
+
+deleted=()
+kept=()
+
+while read -r branch; do
+	[ "$branch" = "$MAIN" ] && continue
+	if [ "$dry_run" = 1 ]; then
+		if is_merged "$branch"; then
+			deleted+=("$branch")
+		else
+			kept+=("$branch")
+		fi
+	elif git branch -d "$branch" >/dev/null 2>&1; then
+		deleted+=("$branch")
+	else
+		kept+=("$branch")
+	fi
+done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+
+if [ ${#deleted[@]} -eq 0 ]; then
+	echo "Nothing to delete."
+else
+	if [ "$dry_run" = 1 ]; then
+		echo "Would delete ${#deleted[@]}:"
+	else
+		echo "Deleted ${#deleted[@]}:"
+	fi
+	printf '  %s\n' "${deleted[@]}"
+fi
+
+if [ ${#kept[@]} -gt 0 ]; then
+	echo "Kept ${#kept[@]} (not merged):"
+	printf '  %s\n' "${kept[@]}"
+fi
