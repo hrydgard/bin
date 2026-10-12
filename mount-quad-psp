@@ -1,0 +1,20 @@
+#!/bin/bash
+# Mount the \\QUAD\PSP ISO network share into WSL.
+# Usage: mount-quad-psp [mountpoint]   (default /mnt/pspiso)
+set -e
+
+SHARE='\\QUAD\PSP ISO'
+TARGET="${1:-/mnt/pspiso}"
+
+if mountpoint -q "$TARGET"; then
+	echo "$TARGET is already mounted:"
+	mount | grep " on $TARGET " || true
+	read -r -p "Unmount it and mount $SHARE there instead? [y/N] " ans
+	[[ "$ans" == [yY] ]] || exit 1
+	sudo umount "$TARGET"
+fi
+
+sudo mkdir -p "$TARGET"
+sudo mount -t drvfs "$SHARE" "$TARGET" -o uid="$(id -u)",gid="$(id -g)",metadata
+echo "Mounted $SHARE on $TARGET"
+ls "$TARGET" | head
